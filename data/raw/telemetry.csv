@@ -1,0 +1,5 @@
+timestamp,temperature,battery_voltage,vibration,power,subsystem,failed
+2025-01-01 00:00,22.3,28.1,0.02,120,battery,0
+2025-01-01 01:00,22.8,28.0,0.02,119,battery,0
+2025-01-01 02:00,23.5,27.8,0.03,118,battery,0
+2025-01-01 03:00,25.2,27.2,0.05,115,battery,1
