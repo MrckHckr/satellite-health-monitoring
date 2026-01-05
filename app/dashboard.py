@@ -1,72 +1,93 @@
-# IMPORT
 import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
-import tensorflow as tf
 import matplotlib.pyplot as plt
 
-from lifelines import CoxPHFitter
+from tensorflow.keras.models import load_model
+from lifelines import KaplanMeierFitter
 
-# CONFIG STREAMLIT
-st.set_page_config(
-    page_title="Satellite Health Monitoring",
-    layout="wide"
-)
+# Caricamento risorse
+st.set_page_config(page_title="Satellite Health Monitoring", layout="wide")
 
-st.title("🛰️ Satellite Health Monitoring Dashboard")
-
-# LOAD MODELLI E SCALER
-@st.cache_resource
-def load_models():
-    lstm = tf.keras.models.load_model("models/lstm_model.h5")
-    scaler = joblib.load("models/scaler.pkl")
-    return lstm, scaler
-
-lstm_model, scaler = load_models()
-
-# LOAD DATI
 @st.cache_data
 def load_data():
-    return pd.read_csv("data/processed/telemetry.csv")
+    url = "https://raw.githubusercontent.com/TUO_USERNAME/satellite-health-monitoring/main/data/raw/telemetry.csv"
+    return pd.read_csv(url, parse_dates=["timestamp"])
 
+@st.cache_resource
+def load_model_assets():
+    model = load_model("models/lstm_model.h5")
+    scaler = joblib.load("models/scaler.pkl")
+    return model, scaler
+
+# Header
+st.title("🛰️ Satellite Health Monitoring Dashboard")
+st.subheader("Real-Time Predictive Maintenance & Decision Support")
+
+# Telemetria live
 df = load_data()
 
-# INFERENZA
-# Preparazione finestra LSTM
-WINDOW = 30
-
-X = scaler.transform(
-    df[["temperature", "vibration", "power"]]
-)
-
-X_seq = np.array([
-    X[i:i+WINDOW]
-    for i in range(len(X) - WINDOW)
-])
-
-# Probabilità di failure
-failure_prob = lstm_model.predict(X_seq, verbose=0)
-
-# Decision support
-df = df.iloc[WINDOW:].copy()
-df["failure_probability"] = failure_prob.flatten()
-
-# VISUALIZZAZIONE + ALERT
-# Grafici
-st.subheader("📈 Failure Probability")
+st.metric("Samples", len(df))
+st.metric("Subsystems", df["subsystem"].nunique())
 
 st.line_chart(
-    df.set_index("timestamp")["failure_probability"]
+    df.set_index("timestamp")[["temperature", "vibration", "power"]]
 )
 
-# Alert operativi
-if df["failure_probability"].iloc[-1] > 0.8:
-    st.error("🚨 HIGH RISK OF FAILURE — Immediate Action Required")
-elif df["failure_probability"].iloc[-1] > 0.5:
-    st.warning("⚠️ MEDIUM RISK — Monitor Closely")
+# Anomaly Detection (Isolation Forest)
+from sklearn.ensemble import IsolationForest
+
+features = df[["temperature", "vibration", "power"]]
+
+iso = IsolationForest(contamination=0.05, random_state=42)
+df["anomaly"] = iso.fit_predict(features)
+
+anomalies = df[df["anomaly"] == -1]
+
+st.subheader("🚨 Anomaly Detection")
+st.write(f"Detected anomalies: {len(anomalies)}")
+st.dataframe(anomalies.tail())
+
+# Failure Probability (LSTM)
+model, scaler = load_model_assets()
+
+WINDOW_SIZE = 3
+
+def create_sequence(data):
+    return np.expand_dims(data[-WINDOW_SIZE:], axis=0)
+
+scaled = scaler.transform(features)
+X_inference = create_sequence(scaled)
+
+failure_prob = model.predict(X_inference, verbose=0)[0][0]
+
+st.subheader("🔮 Failure Prediction")
+st.metric("Failure Probability (next horizon)", f"{failure_prob:.2f}")
+
+# Decision Support
+if failure_prob > 0.6:
+    st.error("🚨 ACTION REQUIRED: Schedule maintenance")
+elif failure_prob > 0.4:
+    st.warning("⚠️ Increase monitoring")
 else:
-    st.success("✅ System Healthy")
+    st.success("✅ System nominal")
 
+# Survival Analysis (RUL)
+st.subheader("⏳ Remaining Useful Life")
 
+df_sorted = df.sort_values("timestamp")
+df_sorted["time"] = (df_sorted["timestamp"] - df_sorted["timestamp"].min()).dt.total_seconds() / 3600
 
+kmf = KaplanMeierFitter()
+kmf.fit(df_sorted["time"], event_observed=df_sorted["failed"])
+
+fig, ax = plt.subplots()
+kmf.plot_survival_function(ax=ax)
+ax.set_xlabel("Operating Time (hours)")
+ax.set_ylabel("Survival Probability")
+
+st.pyplot(fig)
+
+# Avvio locale
+streamlit run app/dashboard.py
